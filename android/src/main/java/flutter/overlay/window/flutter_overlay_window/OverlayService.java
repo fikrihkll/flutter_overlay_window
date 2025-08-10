@@ -162,11 +162,54 @@ public class OverlayService extends Service implements View.OnTouchListener {
         int dx = initialPosition[0];
         int dy = initialPosition[1];
         
+        // Set gravity to NO_GRAVITY for manual positioning, or use specific gravity for edge alignment
+        int layoutGravity = Gravity.NO_GRAVITY;
+        if (WindowSetup.gravity == (Gravity.TOP | Gravity.LEFT)) {
+            layoutGravity = Gravity.TOP | Gravity.LEFT;
+            dx = 0;
+            dy = -statusBarHeightPx();
+        } else if (WindowSetup.gravity == (Gravity.TOP | Gravity.RIGHT)) {
+            layoutGravity = Gravity.TOP | Gravity.RIGHT;
+            dx = 0;
+            dy = -statusBarHeightPx();
+        } else if (WindowSetup.gravity == (Gravity.BOTTOM | Gravity.LEFT)) {
+            layoutGravity = Gravity.BOTTOM | Gravity.LEFT;
+            dx = 0;
+            dy = 0;
+        } else if (WindowSetup.gravity == (Gravity.BOTTOM | Gravity.RIGHT)) {
+            layoutGravity = Gravity.BOTTOM | Gravity.RIGHT;
+            dx = 0;
+            dy = 0;
+        } else if (WindowSetup.gravity == Gravity.CENTER) {
+            layoutGravity = Gravity.CENTER;
+            dx = 0;
+            dy = 0;
+        } else if (WindowSetup.gravity == (Gravity.CENTER | Gravity.LEFT)) {
+            layoutGravity = Gravity.CENTER | Gravity.LEFT;
+            dx = 0;
+            dy = 0;
+        } else if (WindowSetup.gravity == (Gravity.CENTER | Gravity.RIGHT)) {
+            layoutGravity = Gravity.CENTER | Gravity.RIGHT;
+            dx = 0;
+            dy = 0;
+        } else if (WindowSetup.gravity == Gravity.TOP) {
+            layoutGravity = Gravity.TOP;
+            dx = 0;
+            dy = -statusBarHeightPx();
+        } else if (WindowSetup.gravity == Gravity.BOTTOM) {
+            layoutGravity = Gravity.BOTTOM;
+            dx = 0;
+            dy = 0;
+        } else {
+            // For any other gravity combination, use manual positioning
+            layoutGravity = Gravity.NO_GRAVITY;
+        }
+        
         WindowManager.LayoutParams params = new WindowManager.LayoutParams(
                 WindowSetup.width == -1999 ? -1 : dpToPx(WindowSetup.width),
                 WindowSetup.height != -1999 ? dpToPx(WindowSetup.height) : screenHeight(),
-                0,
-                -statusBarHeightPx(),
+                dx,
+                dy,
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                         : WindowManager.LayoutParams.TYPE_PHONE,
                 WindowSetup.flag | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
@@ -177,16 +220,40 @@ public class OverlayService extends Service implements View.OnTouchListener {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && WindowSetup.flag == clickableFlag) {
             params.alpha = MAXIMUM_OPACITY_ALLOWED_FOR_S_AND_HIGHER;
         }
-        params.gravity = WindowSetup.gravity;
+        params.gravity = layoutGravity;
         flutterView.setOnTouchListener(this);
+        
+        Log.d("OverlayService", String.format("Window params: gravity=%s (0x%x), x=%d, y=%d, width=%d, height=%d", 
+                gravityToString(layoutGravity), layoutGravity, dx, dy, params.width, params.height));
+        
         windowManager.addView(flutterView, params);
         
-        // Wait for the view to be laid out before positioning
-        flutterView.post(() -> {
-            moveOverlay(dx, dy, null);
-        });
+        // Only call moveOverlay if we're using manual positioning
+        if (layoutGravity == Gravity.NO_GRAVITY) {
+            flutterView.post(() -> {
+                moveOverlay(dx, dy, null);
+            });
+        }
         
         return START_STICKY;
+    }
+
+    /**
+     * Convert gravity constant to readable string for debugging
+     */
+    private String gravityToString(int gravity) {
+        StringBuilder sb = new StringBuilder();
+        if ((gravity & Gravity.TOP) != 0) sb.append("TOP|");
+        if ((gravity & Gravity.BOTTOM) != 0) sb.append("BOTTOM|");
+        if ((gravity & Gravity.LEFT) != 0) sb.append("LEFT|");
+        if ((gravity & Gravity.RIGHT) != 0) sb.append("RIGHT|");
+        if ((gravity & Gravity.CENTER) != 0) sb.append("CENTER|");
+        if ((gravity & Gravity.CENTER_HORIZONTAL) != 0) sb.append("CENTER_HORIZONTAL|");
+        if ((gravity & Gravity.CENTER_VERTICAL) != 0) sb.append("CENTER_VERTICAL|");
+        if (sb.length() > 0) {
+            sb.setLength(sb.length() - 1); // Remove trailing |
+        }
+        return sb.toString();
     }
 
     /**
@@ -202,8 +269,7 @@ public class OverlayService extends Service implements View.OnTouchListener {
                     dx = 0;
                     break;
                 case Gravity.RIGHT:
-                    // We'll calculate this after the view is laid out
-                    dx = 0;
+                    dx = 0; // Will be handled by gravity
                     break;
                 case Gravity.CENTER_HORIZONTAL:
                 default:
@@ -221,7 +287,7 @@ public class OverlayService extends Service implements View.OnTouchListener {
                     dy = -statusBarHeightPx();
                     break;
                 case Gravity.BOTTOM:
-                    dy = screenHeight() - navigationBarHeightPx();
+                    dy = 0; // Will be handled by gravity
                     break;
                 case Gravity.CENTER_VERTICAL:
                 default:
@@ -232,8 +298,8 @@ public class OverlayService extends Service implements View.OnTouchListener {
             dy = dpToPx(startY);
         }
         
-        Log.d("OverlayService", String.format("Initial position: dx=%d, dy=%d, gravity=0x%x, screenSize=%dx%d", 
-                dx, dy, WindowSetup.gravity, szWindow.x, szWindow.y));
+        Log.d("OverlayService", String.format("Initial position: dx=%d, dy=%d, gravity=%s (0x%x), screenSize=%dx%d", 
+                dx, dy, gravityToString(WindowSetup.gravity), WindowSetup.gravity, szWindow.x, szWindow.y));
         
         return new int[]{dx, dy};
     }
@@ -376,10 +442,14 @@ public class OverlayService extends Service implements View.OnTouchListener {
                     adjustedX = (szWindow.x - flutterView.getWidth()) / 2;
                 }
                 break;
+            default:
+                // For NO_GRAVITY or custom positioning, use the provided x
+                adjustedX = x;
+                break;
         }
         
-        Log.d("OverlayService", String.format("Gravity positioning: originalX=%d, adjustedX=%d, gravity=0x%x, viewWidth=%d, screenWidth=%d", 
-                x, adjustedX, WindowSetup.gravity, 
+        Log.d("OverlayService", String.format("Gravity positioning: originalX=%d, adjustedX=%d, gravity=%s (0x%x), viewWidth=%d, screenWidth=%d", 
+                x, adjustedX, gravityToString(WindowSetup.gravity), WindowSetup.gravity, 
                 (flutterView != null ? flutterView.getWidth() : -1), szWindow.x));
         
         return adjustedX;
