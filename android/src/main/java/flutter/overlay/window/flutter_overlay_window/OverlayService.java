@@ -60,7 +60,8 @@ public class OverlayService extends Service implements View.OnTouchListener {
     private FlutterView flutterView;
     private MethodChannel flutterChannel;
     private BasicMessageChannel<Object> overlayMessageChannel;
-    private int clickableFlag = WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
+    private int clickableFlag = WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
             WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN;
 
     private Handler mAnimationHandler = new Handler();
@@ -89,7 +90,8 @@ public class OverlayService extends Service implements View.OnTouchListener {
             flutterView = null;
         }
         isRunning = false;
-        NotificationManager notificationManager = (NotificationManager) getApplicationContext().getSystemService(Context.NOTIFICATION_SERVICE);
+        NotificationManager notificationManager = (NotificationManager) getApplicationContext()
+                .getSystemService(Context.NOTIFICATION_SERVICE);
         notificationManager.cancel(OverlayConstants.NOTIFICATION_ID);
         instance = null;
     }
@@ -97,6 +99,11 @@ public class OverlayService extends Service implements View.OnTouchListener {
     @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR1)
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent == null) {
+            Log.e("OverlayService", "onStartCommand: Intent is null!");
+            return START_STICKY;
+        }
+
         mResources = getApplicationContext().getResources();
         int startX = intent.getIntExtra("startX", OverlayConstants.DEFAULT_XY);
         int startY = intent.getIntExtra("startY", OverlayConstants.DEFAULT_XY);
@@ -147,49 +154,97 @@ public class OverlayService extends Service implements View.OnTouchListener {
         });
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.HONEYCOMB) {
-            windowManager.getDefaultDisplay().getSize(szWindow);
-        } else {
-            DisplayMetrics displaymetrics = new DisplayMetrics();
-            windowManager.getDefaultDisplay().getMetrics(displaymetrics);
-            int w = displaymetrics.widthPixels;
-            int h = displaymetrics.heightPixels;
-            szWindow.set(w, h);
-        }
-        int dx = startX == OverlayConstants.DEFAULT_XY ? 0 : startX;
-        int dy = startY == OverlayConstants.DEFAULT_XY ? -statusBarHeightPx() : startY;
+        // Get accurate screen dimensions
+        szWindow = getCurrentScreenSize();
+        
+        // Calculate initial position based on gravity and screen dimensions
+        int[] initialPosition = calculateInitialPosition(startX, startY);
+        int dx = initialPosition[0];
+        int dy = initialPosition[1];
+        
         WindowManager.LayoutParams params = new WindowManager.LayoutParams(
-                WindowSetup.width == -1999 ? -1 : WindowSetup.width,
-                WindowSetup.height != -1999 ? WindowSetup.height : screenHeight(),
+                WindowSetup.width == -1999 ? -1 : dpToPx(WindowSetup.width),
+                WindowSetup.height != -1999 ? dpToPx(WindowSetup.height) : screenHeight(),
                 0,
                 -statusBarHeightPx(),
-                Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY : WindowManager.LayoutParams.TYPE_PHONE,
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                        : WindowManager.LayoutParams.TYPE_PHONE,
                 WindowSetup.flag | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
                         | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                         | WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR
                         | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
-                PixelFormat.TRANSLUCENT
-        );
+                PixelFormat.TRANSLUCENT);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && WindowSetup.flag == clickableFlag) {
             params.alpha = MAXIMUM_OPACITY_ALLOWED_FOR_S_AND_HIGHER;
         }
         params.gravity = WindowSetup.gravity;
         flutterView.setOnTouchListener(this);
         windowManager.addView(flutterView, params);
-        moveOverlay(dx, dy, null);
+        
+        // Wait for the view to be laid out before positioning
+        flutterView.post(() -> {
+            moveOverlay(dx, dy, null);
+        });
+        
         return START_STICKY;
     }
 
+    /**
+     * Calculate initial position based on gravity and screen dimensions
+     */
+    private int[] calculateInitialPosition(int startX, int startY) {
+        int dx, dy;
+        
+        if (startX == OverlayConstants.DEFAULT_XY) {
+            // Calculate X based on gravity
+            switch (WindowSetup.gravity & Gravity.HORIZONTAL_GRAVITY_MASK) {
+                case Gravity.LEFT:
+                    dx = 0;
+                    break;
+                case Gravity.RIGHT:
+                    // We'll calculate this after the view is laid out
+                    dx = 0;
+                    break;
+                case Gravity.CENTER_HORIZONTAL:
+                default:
+                    dx = 0;
+                    break;
+            }
+        } else {
+            dx = dpToPx(startX);
+        }
+        
+        if (startY == OverlayConstants.DEFAULT_XY) {
+            // Calculate Y based on gravity
+            switch (WindowSetup.gravity & Gravity.VERTICAL_GRAVITY_MASK) {
+                case Gravity.TOP:
+                    dy = -statusBarHeightPx();
+                    break;
+                case Gravity.BOTTOM:
+                    dy = screenHeight() - navigationBarHeightPx();
+                    break;
+                case Gravity.CENTER_VERTICAL:
+                default:
+                    dy = -statusBarHeightPx();
+                    break;
+            }
+        } else {
+            dy = dpToPx(startY);
+        }
+        
+        Log.d("OverlayService", String.format("Initial position: dx=%d, dy=%d, gravity=0x%x, screenSize=%dx%d", 
+                dx, dy, WindowSetup.gravity, szWindow.x, szWindow.y));
+        
+        return new int[]{dx, dy};
+    }
 
     @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR1)
     private int screenHeight() {
         Display display = windowManager.getDefaultDisplay();
         DisplayMetrics dm = new DisplayMetrics();
         display.getRealMetrics(dm);
-        return inPortrait() ?
-                dm.heightPixels + statusBarHeightPx() + navigationBarHeightPx()
-                :
-                dm.heightPixels + statusBarHeightPx();
+        return inPortrait() ? dm.heightPixels + statusBarHeightPx() + navigationBarHeightPx()
+                : dm.heightPixels + statusBarHeightPx();
     }
 
     private int statusBarHeightPx() {
@@ -220,14 +275,14 @@ public class OverlayService extends Service implements View.OnTouchListener {
         return mNavigationBarHeight;
     }
 
-
     private void updateOverlayFlag(MethodChannel.Result result, String flag) {
         if (windowManager != null) {
             WindowSetup.setFlag(flag);
             WindowManager.LayoutParams params = (WindowManager.LayoutParams) flutterView.getLayoutParams();
             params.flags = WindowSetup.flag | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS |
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN |
-                    WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
+                    WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR
+                    | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && WindowSetup.flag == clickableFlag) {
                 params.alpha = MAXIMUM_OPACITY_ALLOWED_FOR_S_AND_HIGHER;
             } else {
@@ -243,9 +298,30 @@ public class OverlayService extends Service implements View.OnTouchListener {
     private void resizeOverlay(int width, int height, boolean enableDrag, MethodChannel.Result result) {
         if (windowManager != null) {
             WindowManager.LayoutParams params = (WindowManager.LayoutParams) flutterView.getLayoutParams();
-            params.width = (width == -1999 || width == -1) ? -1 : dpToPx(width);
-            params.height = (height != 1999 || height != -1) ? dpToPx(height) : height;
+            
+            // Handle width parameter correctly
+            if (width == -1999 || width == -1) {
+                params.width = -1; // MATCH_PARENT
+            } else {
+                params.width = dpToPx(width);
+            }
+            
+            // Handle height parameter correctly
+            if (height == -1999 || height == -1) {
+                params.height = -1; // MATCH_PARENT
+            } else {
+                params.height = dpToPx(height);
+            }
+            
             WindowSetup.enableDrag = enableDrag;
+            
+            // Ensure the overlay stays within bounds after resize
+            if (params.width > 0 && params.height > 0) {
+                int[] boundedPosition = ensureBounds(params.x, params.y, params);
+                params.x = boundedPosition[0];
+                params.y = boundedPosition[1];
+            }
+            
             windowManager.updateViewLayout(flutterView, params);
             result.success(true);
         } else {
@@ -256,8 +332,20 @@ public class OverlayService extends Service implements View.OnTouchListener {
     private void moveOverlay(int x, int y, MethodChannel.Result result) {
         if (windowManager != null) {
             WindowManager.LayoutParams params = (WindowManager.LayoutParams) flutterView.getLayoutParams();
-            params.x = (x == -1999 || x == -1) ? -1 : dpToPx(x);
-            params.y = dpToPx(y);
+            
+            // Convert coordinates to pixels if they're in dp
+            int targetX = (x == -1999 || x == -1) ? params.x : dpToPx(x);
+            int targetY = dpToPx(y);
+            
+            // Apply gravity-based positioning
+            targetX = applyGravityPositioning(targetX, targetY, params);
+            
+            // Ensure the overlay stays within screen bounds
+            int[] boundedPosition = ensureBounds(targetX, targetY, params);
+            
+            params.x = boundedPosition[0];
+            params.y = boundedPosition[1];
+            
             windowManager.updateViewLayout(flutterView, params);
             if (result != null)
                 result.success(true);
@@ -267,6 +355,61 @@ public class OverlayService extends Service implements View.OnTouchListener {
         }
     }
 
+    /**
+     * Apply gravity-based positioning adjustments
+     */
+    private int applyGravityPositioning(int x, int y, WindowManager.LayoutParams params) {
+        int adjustedX = x;
+        
+        // Handle horizontal gravity
+        switch (WindowSetup.gravity & Gravity.HORIZONTAL_GRAVITY_MASK) {
+            case Gravity.LEFT:
+                adjustedX = 0;
+                break;
+            case Gravity.RIGHT:
+                if (flutterView != null && flutterView.getWidth() > 0) {
+                    adjustedX = szWindow.x - flutterView.getWidth();
+                }
+                break;
+            case Gravity.CENTER_HORIZONTAL:
+                if (flutterView != null && flutterView.getWidth() > 0) {
+                    adjustedX = (szWindow.x - flutterView.getWidth()) / 2;
+                }
+                break;
+        }
+        
+        Log.d("OverlayService", String.format("Gravity positioning: originalX=%d, adjustedX=%d, gravity=0x%x, viewWidth=%d, screenWidth=%d", 
+                x, adjustedX, WindowSetup.gravity, 
+                (flutterView != null ? flutterView.getWidth() : -1), szWindow.x));
+        
+        return adjustedX;
+    }
+
+    /**
+     * Ensure the overlay stays within screen bounds
+     */
+    private int[] ensureBounds(int x, int y, WindowManager.LayoutParams params) {
+        int boundedX = x;
+        int boundedY = y;
+        
+        if (flutterView != null && flutterView.getWidth() > 0 && flutterView.getHeight() > 0) {
+            // Ensure X position keeps overlay within screen bounds
+            if (boundedX < 0) {
+                boundedX = 0;
+            } else if (boundedX + flutterView.getWidth() > szWindow.x) {
+                boundedX = szWindow.x - flutterView.getWidth();
+            }
+            
+            // Ensure Y position keeps overlay within screen bounds
+            if (boundedY < -statusBarHeightPx()) {
+                boundedY = -statusBarHeightPx();
+            } else if (boundedY + flutterView.getHeight() > szWindow.y) {
+                boundedY = szWindow.y - flutterView.getHeight();
+            }
+        }
+        
+        return new int[]{boundedX, boundedY};
+    }
 
     public static Map<String, Double> getCurrentPosition() {
         if (instance != null && instance.flutterView != null) {
@@ -283,8 +426,20 @@ public class OverlayService extends Service implements View.OnTouchListener {
         if (instance != null && instance.flutterView != null) {
             if (instance.windowManager != null) {
                 WindowManager.LayoutParams params = (WindowManager.LayoutParams) instance.flutterView.getLayoutParams();
-                params.x = (x == -1999 || x == -1) ? -1 : instance.dpToPx(x);
-                params.y = instance.dpToPx(y);
+                
+                // Convert coordinates to pixels if they're in dp
+                int targetX = (x == -1999 || x == -1) ? params.x : instance.dpToPx(x);
+                int targetY = instance.dpToPx(y);
+                
+                // Apply gravity-based positioning
+                targetX = instance.applyGravityPositioning(targetX, targetY, params);
+                
+                // Ensure the overlay stays within screen bounds
+                int[] boundedPosition = instance.ensureBounds(targetX, targetY, params);
+                
+                params.x = boundedPosition[0];
+                params.y = boundedPosition[1];
+                
                 instance.windowManager.updateViewLayout(instance.flutterView, params);
                 return true;
             } else {
@@ -294,7 +449,6 @@ public class OverlayService extends Service implements View.OnTouchListener {
             return false;
         }
     }
-
 
     @Override
     public void onCreate() {
@@ -306,9 +460,8 @@ public class OverlayService extends Service implements View.OnTouchListener {
             Log.e("OverlayService", "Flutter engine not found, hence creating new flutter engine");
             FlutterEngineGroup engineGroup = new FlutterEngineGroup(this);
             DartExecutor.DartEntrypoint entryPoint = new DartExecutor.DartEntrypoint(
-                FlutterInjector.instance().flutterLoader().findAppBundlePath(),
-                "overlayMain"
-            );  // "overlayMain" is custom entry point
+                    FlutterInjector.instance().flutterLoader().findAppBundlePath(),
+                    "overlayMain"); // "overlayMain" is custom entry point
 
             flutterEngine = engineGroup.createAndRunEngine(this, entryPoint);
 
@@ -319,7 +472,8 @@ public class OverlayService extends Service implements View.OnTouchListener {
         // Create the MethodChannel with the properly initialized FlutterEngine
         if (flutterEngine != null) {
             flutterChannel = new MethodChannel(flutterEngine.getDartExecutor(), OverlayConstants.OVERLAY_TAG);
-            overlayMessageChannel = new BasicMessageChannel(flutterEngine.getDartExecutor(), OverlayConstants.MESSENGER_TAG, JSONMessageCodec.INSTANCE);
+            overlayMessageChannel = new BasicMessageChannel(flutterEngine.getDartExecutor(),
+                    OverlayConstants.MESSENGER_TAG, JSONMessageCodec.INSTANCE);
         }
 
         createNotificationChannel();
@@ -349,8 +503,7 @@ public class OverlayService extends Service implements View.OnTouchListener {
             NotificationChannel serviceChannel = new NotificationChannel(
                     OverlayConstants.CHANNEL_ID,
                     "Foreground Service Channel",
-                    NotificationManager.IMPORTANCE_DEFAULT
-            );
+                    NotificationManager.IMPORTANCE_DEFAULT);
             NotificationManager manager = getSystemService(NotificationManager.class);
             assert manager != null;
             manager.createNotificationChannel(serviceChannel);
@@ -358,7 +511,8 @@ public class OverlayService extends Service implements View.OnTouchListener {
     }
 
     private int getDrawableResourceId(String resType, String name) {
-        return getApplicationContext().getResources().getIdentifier(String.format("ic_%s", name), resType, getApplicationContext().getPackageName());
+        return getApplicationContext().getResources().getIdentifier(String.format("ic_%s", name), resType,
+                getApplicationContext().getPackageName());
     }
 
     private int dpToPx(int dp) {
@@ -372,6 +526,51 @@ public class OverlayService extends Service implements View.OnTouchListener {
 
     private boolean inPortrait() {
         return mResources.getConfiguration().orientation == Configuration.ORIENTATION_PORTRAIT;
+    }
+
+    /**
+     * Get current screen dimensions in pixels
+     */
+    private Point getCurrentScreenSize() {
+        Point screenSize = new Point();
+        if (windowManager != null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.HONEYCOMB) {
+                windowManager.getDefaultDisplay().getRealSize(screenSize);
+            } else {
+                DisplayMetrics displaymetrics = new DisplayMetrics();
+                windowManager.getDefaultDisplay().getRealMetrics(displaymetrics);
+                screenSize.set(displaymetrics.widthPixels, displaymetrics.heightPixels);
+            }
+        }
+        return screenSize;
+    }
+
+    /**
+     * Update screen dimensions (useful for orientation changes)
+     */
+    private void updateScreenDimensions() {
+        szWindow = getCurrentScreenSize();
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        
+        // Update screen dimensions when configuration changes
+        updateScreenDimensions();
+        
+        // Reposition overlay to stay within new screen bounds
+        if (windowManager != null && flutterView != null) {
+            WindowManager.LayoutParams params = (WindowManager.LayoutParams) flutterView.getLayoutParams();
+            int[] boundedPosition = ensureBounds(params.x, params.y, params);
+            
+            // Only update if position actually changed
+            if (params.x != boundedPosition[0] || params.y != boundedPosition[1]) {
+                params.x = boundedPosition[0];
+                params.y = boundedPosition[1];
+                windowManager.updateViewLayout(flutterView, params);
+            }
+        }
     }
 
     @Override
@@ -411,7 +610,8 @@ public class OverlayService extends Service implements View.OnTouchListener {
                 case MotionEvent.ACTION_CANCEL:
                     lastYPosition = params.y;
                     if (!WindowSetup.positionGravity.equals("none")) {
-                        if (windowManager == null) return false;
+                        if (windowManager == null)
+                            return false;
                         windowManager.updateViewLayout(flutterView, params);
                         mTrayTimerTask = new TrayAnimationTimerTask();
                         mTrayAnimationTimer = new Timer();
@@ -434,31 +634,59 @@ public class OverlayService extends Service implements View.OnTouchListener {
         public TrayAnimationTimerTask() {
             super();
             mDestY = lastYPosition;
+            
+            // Calculate destination X based on position gravity
             switch (WindowSetup.positionGravity) {
                 case "auto":
-                    mDestX = (params.x + (flutterView.getWidth() / 2)) <= szWindow.x / 2 ? 0 : szWindow.x - flutterView.getWidth();
-                    return;
+                    // Auto-position based on current position relative to screen center
+                    if (flutterView != null && flutterView.getWidth() > 0) {
+                        mDestX = (params.x + (flutterView.getWidth() / 2)) <= szWindow.x / 2 ? 0
+                                : szWindow.x - flutterView.getWidth();
+                    } else {
+                        mDestX = params.x;
+                    }
+                    break;
                 case "left":
                     mDestX = 0;
-                    return;
+                    break;
                 case "right":
-                    mDestX = szWindow.x - flutterView.getWidth();
-                    return;
+                    if (flutterView != null && flutterView.getWidth() > 0) {
+                        mDestX = szWindow.x - flutterView.getWidth();
+                    } else {
+                        mDestX = params.x;
+                    }
+                    break;
                 default:
                     mDestX = params.x;
                     mDestY = params.y;
                     break;
+            }
+            
+            // Ensure destination position is within bounds
+            if (flutterView != null && flutterView.getWidth() > 0 && flutterView.getHeight() > 0) {
+                if (mDestX < 0) mDestX = 0;
+                if (mDestX + flutterView.getWidth() > szWindow.x) {
+                    mDestX = szWindow.x - flutterView.getWidth();
+                }
+                if (mDestY < -statusBarHeightPx()) mDestY = -statusBarHeightPx();
+                if (mDestY + flutterView.getHeight() > szWindow.y) {
+                    mDestY = szWindow.y - flutterView.getHeight();
+                }
             }
         }
 
         @Override
         public void run() {
             mAnimationHandler.post(() -> {
+                // Smooth animation with easing
                 params.x = (2 * (params.x - mDestX)) / 3 + mDestX;
                 params.y = (2 * (params.y - mDestY)) / 3 + mDestY;
+                
                 if (windowManager != null) {
                     windowManager.updateViewLayout(flutterView, params);
                 }
+                
+                // Stop animation when close enough to destination
                 if (Math.abs(params.x - mDestX) < 2 && Math.abs(params.y - mDestY) < 2) {
                     TrayAnimationTimerTask.this.cancel();
                     mTrayAnimationTimer.cancel();
@@ -466,6 +694,5 @@ public class OverlayService extends Service implements View.OnTouchListener {
             });
         }
     }
-
 
 }
